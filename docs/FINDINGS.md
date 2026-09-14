@@ -42,3 +42,17 @@ Second kernel (5x5 Gaussian blur) measured the same way, bit-correct (<=1 LSB vs
 - **Multithreading helps compute-bound (FAST ~3x) but NOT BW-bound (blur ~0)** — HVX threads share one DDR path; adding threads adds no bandwidth. Textbook roofline, measured.
 - **Hexagon offload wins on FAST, loses on blur.** Not every front-end kernel belongs on the DSP. Build the offload plan (and the cross-DSP comparison) BY BOUND-CLASS: compute-bound (FAST/Harris/orient) -> Hexagon; BW-bound (pyramid/undistort) -> CPU or keep resident.
 - HVX gotcha root-caused via micro-test: Q6_Vub_vasr_VuhVuhR_rnd_sat saturates large u16 regardless of shift; do >>8 in u16 domain first. Don't guess HVX widen/narrow semantics -- probe them.
+
+
+## 7. ORB orientation: compute-bound (revises the roofline), modest HVX (dense vs sparse)
+Third kernel: ORB IC_Angle (intensity centroid over r=15 patch + atan2), 1056 keypoints, on-DSP, gated bit-identical to scalar.
+- **atan2 is only ~7% of the scalar kernel** (2841us full vs 2639us centroid-only) -> orient is CENTROID-COMPUTE-bound, NOT the "scalar/atan2 bottleneck" an earlier roofline predicted. atan2 is a ~200us scalar floor, not the wall.
+- **HVX = 3.45x (823us vs 2840us)** via vrmpy-accumulate (Q6_Vw_vrmpyacc_VwVubVb). Modest vs FAST's 44x.
+
+### The offload taxonomy (3 kernels measured) is 3-way, not 2-way:
+| kernel | class | HVX result | vs A78 CPU |
+|---|---|---|---|
+| FAST | compute-bound, **dense per-pixel** | ~44x (+MT) -> 0.55 ms | **beats** it, offloads |
+| orient | compute-bound, **sparse per-keypoint** | ~3.5x -> 0.82 ms (atan2 floor ~24%) | competitive |
+| blur | **bandwidth-bound** | ~0 from MT -> 8.1 ms | loses |
+**Dense-compute wins big on HVX; sparse-compute (small per-feature patches) wins modestly (low lane util + per-feature reductions); bandwidth-bound doesn't win.** That taxonomy — not "offload the front end" — is how to plan a VSLAM offload and the currency for a cross-DSP (e.g. Cadence) equivalency.
