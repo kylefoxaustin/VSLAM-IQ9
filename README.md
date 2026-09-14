@@ -27,7 +27,8 @@ headroom for planning/policy, more cameras, higher frame-rate, and tail-latency 
 | **FAST-9-16 on Hexagon — HVX, 1 thread** | 1.60 ms on-DSP |
 | **FAST-9-16 on Hexagon — HVX multi-thread** | **0.555 ms on-DSP** (~137× over scalar; ~3.6× faster than the A78 CPU, offloads it) — bit-exact |
 | **5x5 Gaussian blur on Hexagon — HVX** | 8.1 ms (BW-bound: MT doesn't help, LOSES to CPU) |
-| **ORB orientation on Hexagon — HVX** | 0.82 ms, ~3.5x (compute-bound but sparse per-keypoint; atan2 is a ~200us floor — this *revises* the earlier 'scalar-bottleneck' roofline) |
+| **ORB orientation on Hexagon — HVX, 1 thread** | 0.84 ms, ~3.4x (compute-bound but sparse per-keypoint; atan2 is a ~200us floor — this *revises* the earlier 'scalar-bottleneck' roofline) |
+| **ORB orientation on Hexagon — HVX multi-thread** | **0.329 ms on-DSP** (8.6× over scalar) — bit-identical; but threading only 2.5× (sparse-compute threads sub-linearly vs dense FAST's ~3×) |
 
 See [docs/FINDINGS.md](docs/FINDINGS.md) for the full trail and method.
 

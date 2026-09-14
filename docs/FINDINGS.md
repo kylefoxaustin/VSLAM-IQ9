@@ -47,12 +47,20 @@ Second kernel (5x5 Gaussian blur) measured the same way, bit-correct (<=1 LSB vs
 ## 7. ORB orientation: compute-bound (revises the roofline), modest HVX (dense vs sparse)
 Third kernel: ORB IC_Angle (intensity centroid over r=15 patch + atan2), 1056 keypoints, on-DSP, gated bit-identical to scalar.
 - **atan2 is only ~7% of the scalar kernel** (2841us full vs 2639us centroid-only) -> orient is CENTROID-COMPUTE-bound, NOT the "scalar/atan2 bottleneck" an earlier roofline predicted. atan2 is a ~200us scalar floor, not the wall.
-- **HVX = 3.45x (823us vs 2840us)** via vrmpy-accumulate (Q6_Vw_vrmpyacc_VwVubVb). Modest vs FAST's 44x.
+- **HVX = 3.4x (836us vs 2833us)** via vrmpy-accumulate (Q6_Vw_vrmpyacc_VwVubVb). Modest vs FAST's 44x.
+
+| orient implementation | on-DSP | speedup | vs scalar diff |
+|---|---|---|---|
+| scalar (1 HW thread) | 2833 us | 1x | ref |
+| HVX, 1 thread | 836 us | 3.4x | 0 mrad (bit-identical) |
+| **HVX multi-thread (worker_pool, keypoint bands)** | **329 us** | **8.6x** | **0 mrad (bit-identical)** |
+
+- **Threading gave only 2.5x** (FAST got ~3-4x on the same silicon). Sparse per-keypoint work, the per-keypoint atan2 float tail, and worker_pool dispatch overhead cap thread scaling — a *quantified* property of the sparse-compute class, not a bug. Keypoint bands are embarrassingly parallel (disjoint ang[] slots, no locks) yet still don't scale like dense FAST.
 
 ### The offload taxonomy (3 kernels measured) is 3-way, not 2-way:
-| kernel | class | HVX result | vs A78 CPU |
-|---|---|---|---|
-| FAST | compute-bound, **dense per-pixel** | ~44x (+MT) -> 0.55 ms | **beats** it, offloads |
-| orient | compute-bound, **sparse per-keypoint** | ~3.5x -> 0.82 ms (atan2 floor ~24%) | competitive |
-| blur | **bandwidth-bound** | ~0 from MT -> 8.1 ms | loses |
-**Dense-compute wins big on HVX; sparse-compute (small per-feature patches) wins modestly (low lane util + per-feature reductions); bandwidth-bound doesn't win.** That taxonomy — not "offload the front end" — is how to plan a VSLAM offload and the currency for a cross-DSP (e.g. Cadence) equivalency.
+| kernel | class | HVX 1t | HVX-MT | thread scaling | vs A78 CPU |
+|---|---|---|---|---|---|
+| FAST | compute-bound, **dense per-pixel** | 1.6 ms | **0.55 ms** | ~3x | **beats** it, offloads |
+| orient | compute-bound, **sparse per-keypoint** | 0.84 ms | **0.33 ms** | 2.5x | competitive |
+| blur | **bandwidth-bound** | 8.6 ms | 8.1 ms | ~0 | loses |
+**Dense-compute wins big on HVX and threads well; sparse-compute (small per-feature patches) wins modestly and threads *sub-linearly*; bandwidth-bound doesn't win at all and doesn't thread.** That taxonomy — not "offload the front end" — is how to plan a VSLAM offload and the currency for a cross-DSP (e.g. Cadence) equivalency. **Thread-scaling factor is itself a class signature** (dense > sparse > BW).
