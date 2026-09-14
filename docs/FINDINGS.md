@@ -31,3 +31,14 @@ Method note (HVX): the "≥9 contiguous of 16" arc test is vectorized as a **run
 - Multithread FAST across HVX contexts (dspqueue); add corner-coordinate scatter.
 - Port pyramid → orientation → rBRIEF descriptor, each measured per-kernel.
 - Compare per-kernel (µs + op-count) to a Cadence DSP.
+
+
+## 6. Roofline confirmed on silicon: offload compute-bound kernels, not BW-bound
+Second kernel (5x5 Gaussian blur) measured the same way, bit-correct (<=1 LSB vs reference):
+| kernel (bound) | scalar | HVX 1-thread | HVX multi-thread | CPU |
+|---|---|---|---|---|
+| FAST (compute-bound) | 76 ms | 1.6 ms | **0.55 ms** (~3x from threads) | 2 ms |
+| 5x5 blur (BW-bound) | 45 ms | 8.6 ms | 8.1 ms (threads barely help) | ~sub-ms (cv2 separable) |
+- **Multithreading helps compute-bound (FAST ~3x) but NOT BW-bound (blur ~0)** — HVX threads share one DDR path; adding threads adds no bandwidth. Textbook roofline, measured.
+- **Hexagon offload wins on FAST, loses on blur.** Not every front-end kernel belongs on the DSP. Build the offload plan (and the cross-DSP comparison) BY BOUND-CLASS: compute-bound (FAST/Harris/orient) -> Hexagon; BW-bound (pyramid/undistort) -> CPU or keep resident.
+- HVX gotcha root-caused via micro-test: Q6_Vub_vasr_VuhVuhR_rnd_sat saturates large u16 regardless of shift; do >>8 in u16 domain first. Don't guess HVX widen/narrow semantics -- probe them.
