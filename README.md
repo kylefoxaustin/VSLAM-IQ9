@@ -31,6 +31,8 @@ headroom for planning/policy, more cameras, higher frame-rate, and tail-latency 
 | **ORB orientation on Hexagon — HVX multi-thread** | **0.329 ms on-DSP** (8.6× over scalar) — bit-identical; but threading only 2.5× (sparse-compute threads sub-linearly vs dense FAST's ~3×) |
 | **Harris corner response on Hexagon — HVX** | 4.90 ms, 9.25× over scalar — corner-ranking identical (top-2000 overlap 100%) |
 | **Harris corner response on Hexagon — HVX multi-thread** | **1.97 ms on-DSP** (23.1× over scalar) — threading 2.5×; a load-heavy implementation threads sub-linearly even though the kernel is dense-compute |
+| **rBRIEF descriptor on Hexagon — HVX** | 6.72 ms, 24.8× over scalar — bit-exact |
+| **rBRIEF descriptor on Hexagon — HVX multi-thread** | **2.70 ms on-DSP** (61.8× over scalar) — bit-exact; *looks* gather-bound but is actually rounding/compute-bound (the win is vectorizing 1024 rotations/keypoint, not the gather) |
 
 See [docs/FINDINGS.md](docs/FINDINGS.md) for the full trail and method.
 

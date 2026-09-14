@@ -77,12 +77,25 @@ Fourth kernel: dense Harris (Sobel 3x3 -> Ixx/Iyy/Ixy -> 3x3 box-sum -> R=det-0.
 - **9.25x single-thread HVX confirms the dense-compute prediction** (big win, FAST-like).
 - ⭐ **But HVX-MT threads only 2.49x — like sparse orient, NOT like dense FAST (3x).** De-confounded: HVX-vectorizing the serial zero did *not* change it, so the cause is that *this* implementation is **load-heavy** (108 unaligned u8-vector loads per 64 output pixels, because gradients are recomputed for all 9 box positions), pushing it toward bandwidth-bound. **Thread-scaling is kernel × IMPLEMENTATION arithmetic-intensity, not the abstract kernel class alone.** An optimized Harris (each gradient computed once, reused via a separable horizontal+vertical box-sum) should thread closer to 3x. For a cross-DSP (Cadence) equivalency this is the sharper currency: compare by *measured arithmetic intensity*, not by kernel name.
 
-### Taxonomy, 4 kernels measured:
-| kernel | class | HVX 1t | HVX-MT | thread scaling | vs A78 CPU |
+## 9. rBRIEF descriptor: "gather-bound" prediction REFUTED — it's rounding/compute-bound
+Fifth kernel: rotated 256-bit BRIEF descriptor (chained orient-angles -> rotated sampling), 992 keypoints, bit-exact to scalar (mean Hamming 0.000). Uses a deterministic *synthetic* 256-pair pattern (same shape as ORB's learned bit_pattern_31_, for perf + HVX-vs-scalar characterization; not OpenCV-bit-compatible). Scalar reference independently verified bit-exact vs numpy (Hamming 0 over all 992 kp).
+| rBRIEF implementation | on-DSP | speedup |
+|---|---|---|
+| scalar (1 HW thread) | 166.9 ms | 1x |
+| HVX, 1 thread | 6.72 ms | 24.8x |
+| **HVX multi-thread (worker_pool, keypoint bands)** | **2.70 ms** | **61.8x** |
+- ⭐ **Prediction refuted (the valuable part).** rBRIEF *looks* gather-bound — 512 scattered byte loads per keypoint — which predicts a small HVX win (sparse-class). **Measured, it is ROUNDING/COMPUTE-bound:** the scalar wall is 1024 software-float rounding ops per keypoint (the pattern rotations), which vectorize beautifully (24.8x — *larger* than orient's 3.4x or Harris's 9.25x); the scattered loads are cheap. **Classify a kernel by measuring which op is the scalar bottleneck, not by its scariest-looking operation.**
+- HVX gotcha, probed not guessed: `Q6_Vw_equals_Vsf` truncates toward zero but scalar `lrintf` rounds → ~10% of offsets hit the wrong pixel (mean Hamming 26/256). Fix = sign-biased 0.5 in the float domain before the truncating convert → bit-exact.
+
+### Taxonomy, 5 kernels measured:
+| kernel | class | HVX 1t | HVX-MT | thread scaling | HVX vs scalar |
 |---|---|---|---|---|---|
-| FAST | compute-bound, **dense per-pixel** | 1.6 ms | **0.55 ms** | ~3x | **beats** it, offloads |
-| Harris | compute-bound, **dense** (but load-heavy impl) | 4.90 ms | **1.97 ms** | 2.5x | offloads a heavy op |
-| orient | compute-bound, **sparse per-keypoint** | 0.84 ms | **0.33 ms** | 2.5x | competitive |
-| blur | **bandwidth-bound** | 8.6 ms | 8.1 ms | ~0 | loses |
+| FAST | compute-bound, **dense per-pixel** | 1.6 ms | **0.55 ms** | ~3x | 44x |
+| Harris | compute-bound, **dense** (load-heavy impl) | 4.90 ms | **1.97 ms** | 2.5x | 9.25x |
+| orient | compute-bound, **sparse per-keypoint** | 0.84 ms | **0.33 ms** | 2.5x | 3.4x |
+| rBRIEF | **rounding/compute-bound** (not the gather!) | 6.72 ms | **2.70 ms** | 2.5x | 24.8x |
+| blur | **bandwidth-bound** | 8.6 ms | 8.1 ms | ~0 | ~5x (loses to CPU) |
+
+**The whole ORB front-end (FAST detect + Harris score + orientation + rBRIEF descriptor) now runs on the Hexagon cDSP via HVX, each kernel gated correct.** Two load-bearing conclusions for planning an offload and for a cross-DSP (e.g. Cadence) equivalency: (1) **measure the scalar bottleneck** — don't classify by the scariest op (rBRIEF's gather was a red herring); (2) **thread-scaling is a signature** — ~3x is the pure-vector dense-row ceiling; any per-keypoint banding or scalar tail caps it near 2.5x; a bandwidth-bound kernel doesn't thread at all. Compare cross-DSP by measured per-kernel µs + arithmetic intensity, not by kernel name.
 
 HVX semantics banked while building this (probed, not guessed): u8->int **widening deinterleaves** (a 0..127 ramp returns stride-4); in-order widen = `Q6_Wuh_vzxt_Vub` then `Q6_W_vshuff_VVR(hi,lo,-2)`. The kernel dodges it — horizontal neighbors come from unaligned u8 loads (in-order), the square's even/odd int32 split *is* the pixel lo/hi partition, reunited with a 32-bit shuff at store.
