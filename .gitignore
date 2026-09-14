@@ -1,0 +1,13 @@
+# datasets, weights, build outputs, proprietary SDK bits — never commit
+*.png
+*.raw
+*.dvm
+*.so
+*.o
+build*/
+UbuntuARM_*/
+hexagon_*/
+*_skel*
+mav0/
+EuRoC*/
+Hexagon_SDK*/

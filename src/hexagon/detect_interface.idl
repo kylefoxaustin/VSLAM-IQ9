@@ -1,0 +1,7 @@
+// fastRPC interface for the Hexagon FAST detector (our addition to a calculator-style skel).
+// mode: 0 = scalar reference, 1 = HVX. Returns corner count and on-DSP compute time (us).
+interface detector : remote_handle64 {
+   long detect(in sequence<octet> img, in unsigned long w, in unsigned long h,
+               in unsigned long barrier, in unsigned long mode,
+               rout sequence<unsigned long> xy, rout unsigned long ncorn, rout unsigned long us);
+};
