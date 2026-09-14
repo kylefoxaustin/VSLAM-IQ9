@@ -64,3 +64,25 @@ Third kernel: ORB IC_Angle (intensity centroid over r=15 patch + atan2), 1056 ke
 | orient | compute-bound, **sparse per-keypoint** | 0.84 ms | **0.33 ms** | 2.5x | competitive |
 | blur | **bandwidth-bound** | 8.6 ms | 8.1 ms | ~0 | loses |
 **Dense-compute wins big on HVX and threads well; sparse-compute (small per-feature patches) wins modestly and threads *sub-linearly*; bandwidth-bound doesn't win at all and doesn't thread.** That taxonomy — not "offload the front end" — is how to plan a VSLAM offload and the currency for a cross-DSP (e.g. Cadence) equivalency. **Thread-scaling factor is itself a class signature** (dense > sparse > BW).
+
+
+## 8. Harris corner response: dense wins big on HVX, but thread-scaling is kernel × IMPLEMENTATION
+Fourth kernel: dense Harris (Sobel 3x3 -> Ixx/Iyy/Ixy -> 3x3 box-sum -> R=det-0.04*tr^2). Dense Shi-Tomasi/Harris is VINS-Mono's real front-end (goodFeaturesToTrack), so this is both realistic and the clean dense-compute test.
+| Harris implementation | on-DSP | speedup |
+|---|---|---|
+| scalar (1 HW thread) | 45.3 ms | 1x |
+| HVX, 1 thread | 4.90 ms | 9.25x |
+| **HVX multi-thread (worker_pool, row bands)** | **1.97 ms** | **23.1x** |
+- **Gated on the metric a corner-response kernel is FOR**, not raw float: top-500/2000/5000 corner overlap **100.00%**, all 83087 `|R|>1e9` corners match to max_rel **5.4e-5** (float-exact); nonzero-count identical. The larger raw-float diffs (~3e-2) are `det-k*tr^2` catastrophic cancellation in the near-zero *non-corner* noise floor — irrelevant to detection. (Verify the OUTPUT that's used, not the float in the noise.)
+- **9.25x single-thread HVX confirms the dense-compute prediction** (big win, FAST-like).
+- ⭐ **But HVX-MT threads only 2.49x — like sparse orient, NOT like dense FAST (3x).** De-confounded: HVX-vectorizing the serial zero did *not* change it, so the cause is that *this* implementation is **load-heavy** (108 unaligned u8-vector loads per 64 output pixels, because gradients are recomputed for all 9 box positions), pushing it toward bandwidth-bound. **Thread-scaling is kernel × IMPLEMENTATION arithmetic-intensity, not the abstract kernel class alone.** An optimized Harris (each gradient computed once, reused via a separable horizontal+vertical box-sum) should thread closer to 3x. For a cross-DSP (Cadence) equivalency this is the sharper currency: compare by *measured arithmetic intensity*, not by kernel name.
+
+### Taxonomy, 4 kernels measured:
+| kernel | class | HVX 1t | HVX-MT | thread scaling | vs A78 CPU |
+|---|---|---|---|---|---|
+| FAST | compute-bound, **dense per-pixel** | 1.6 ms | **0.55 ms** | ~3x | **beats** it, offloads |
+| Harris | compute-bound, **dense** (but load-heavy impl) | 4.90 ms | **1.97 ms** | 2.5x | offloads a heavy op |
+| orient | compute-bound, **sparse per-keypoint** | 0.84 ms | **0.33 ms** | 2.5x | competitive |
+| blur | **bandwidth-bound** | 8.6 ms | 8.1 ms | ~0 | loses |
+
+HVX semantics banked while building this (probed, not guessed): u8->int **widening deinterleaves** (a 0..127 ramp returns stride-4); in-order widen = `Q6_Wuh_vzxt_Vub` then `Q6_W_vshuff_VVR(hi,lo,-2)`. The kernel dodges it — horizontal neighbors come from unaligned u8 loads (in-order), the square's even/odd int32 split *is* the pixel lo/hi partition, reunited with a 32-bit shuff at store.
