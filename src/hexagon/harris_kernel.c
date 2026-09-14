@@ -29,6 +29,7 @@
 #include "HAP_perf.h"
 #include "worker_pool.h"
 #include <math.h>
+#include <stdlib.h>
 
 #define HARRIS_K 0.04f
 
@@ -103,6 +104,75 @@ typedef struct { const unsigned char* img; unsigned int w,hh,y0,y1; float* resp;
 static void harris_band_fn(void* pv){ harris_band_t* b=(harris_band_t*)pv;
   harris_hvx_rows(b->img,b->w,b->hh,b->resp,b->y0,b->y1); worker_pool_synctoken_jobdone(b->tok); }
 
+/* ---- OPTIMIZED single-pass Harris (modes 3/4): each pixel's gradient-products computed ONCE into
+ * rolling in-order int32 scratch rows, then a 3x3 box-sum reads scratch (no per-box gradient recompute).
+ * RESULT: faster absolute (OPT-MT 1.24 ms = 36.6x scalar, the best Harris variant) BUT threads WORSE
+ * (2.30x vs the naive 2.48x) -- the prediction that "fewer loads -> threads closer to 3x" is REFUTED.
+ * Mechanism: computing gradients once needs a SCRATCH ROUND-TRIP through the shared L2/DDR path, and
+ * the cDSP HW threads share that path -- so caching intermediates converts arithmetic into
+ * shared-memory traffic, which is exactly what caps HVX thread-scaling. Thread-scaling tracks pressure
+ * on the SHARED MEMORY PATH, not the kernel's compute/memory ratio in isolation. ---- */
+static void grad_row(const unsigned char* img, unsigned int w, unsigned int Y, int* ixx,int* iyy,int* ixy){
+  unsigned int x0=2;
+  for(; x0+64+1<=w; x0+=64){
+    const unsigned char* rm=&img[(Y-1)*w+x0],*rc=&img[Y*w+x0],*rp=&img[(Y+1)*w+x0];
+    HVX_Vector gx=Q6_Vh_vsub_VhVh(vh_smooth(ld64_u16(rm+1),ld64_u16(rc+1),ld64_u16(rp+1)),
+                                  vh_smooth(ld64_u16(rm-1),ld64_u16(rc-1),ld64_u16(rp-1)));
+    HVX_Vector gy=Q6_Vh_vsub_VhVh(vh_smooth(ld64_u16(rp-1),ld64_u16(rp),ld64_u16(rp+1)),
+                                  vh_smooth(ld64_u16(rm-1),ld64_u16(rm),ld64_u16(rm+1)));
+    HVX_VectorPair xx=Q6_Ww_vmpy_VhVh(gx,gx),yy=Q6_Ww_vmpy_VhVh(gy,gy),xy=Q6_Ww_vmpy_VhVh(gx,gy);
+    HVX_VectorPair xo=Q6_W_vshuff_VVR(Q6_V_hi_W(xx),Q6_V_lo_W(xx),-4); /* -> in-order int32 */
+    HVX_VectorPair yo=Q6_W_vshuff_VVR(Q6_V_hi_W(yy),Q6_V_lo_W(yy),-4);
+    HVX_VectorPair io=Q6_W_vshuff_VVR(Q6_V_hi_W(xy),Q6_V_lo_W(xy),-4);
+    *(HVX_UVector*)&ixx[x0]=Q6_V_lo_W(xo); *(HVX_UVector*)&ixx[x0+32]=Q6_V_hi_W(xo);
+    *(HVX_UVector*)&iyy[x0]=Q6_V_lo_W(yo); *(HVX_UVector*)&iyy[x0+32]=Q6_V_hi_W(yo);
+    *(HVX_UVector*)&ixy[x0]=Q6_V_lo_W(io); *(HVX_UVector*)&ixy[x0+32]=Q6_V_hi_W(io);
+  }
+  for(unsigned int x=x0; x+1<w; x++){ /* scalar tail cols [x0, w-1) */
+    const unsigned char* p=&img[Y*w+x];
+    int gx=(int)p[-(int)w+1]+2*(int)p[1]+(int)p[w+1]-(int)p[-(int)w-1]-2*(int)p[-1]-(int)p[w-1];
+    int gy=(int)p[w-1]+2*(int)p[w]+(int)p[w+1]-(int)p[-(int)w-1]-2*(int)p[-(int)w]-(int)p[-(int)w+1];
+    ixx[x]=gx*gx; iyy[x]=gy*gy; ixy[x]=gx*gy; }
+  { const unsigned char* p=&img[Y*w+1]; /* col 1 (HVX bulk starts at col 2) */
+    int gx=(int)p[-(int)w+1]+2*(int)p[1]+(int)p[w+1]-(int)p[-(int)w-1]-2*(int)p[-1]-(int)p[w-1];
+    int gy=(int)p[w-1]+2*(int)p[w]+(int)p[w+1]-(int)p[-(int)w-1]-2*(int)p[-(int)w]-(int)p[-(int)w+1];
+    ixx[1]=gx*gx; iyy[1]=gy*gy; ixy[1]=gx*gy; }
+}
+static void harris_opt_rows(const unsigned char* img, unsigned int w, unsigned int hh,
+                            float* resp, unsigned int y0, unsigned int y1){
+  int* buf=(int*)malloc((size_t)9*w*sizeof(int)); if(!buf) return;
+  int* ixx[3]; int* iyy[3]; int* ixy[3];
+  for(int k=0;k<3;k++){ ixx[k]=buf+((size_t)k*3+0)*w; iyy[k]=buf+((size_t)k*3+1)*w; ixy[k]=buf+((size_t)k*3+2)*w; }
+  grad_row(img,w,y0-1,ixx[(y0-1)%3],iyy[(y0-1)%3],ixy[(y0-1)%3]);
+  grad_row(img,w,y0,  ixx[y0%3],    iyy[y0%3],    ixy[y0%3]);
+  for(unsigned int y=y0;y<y1;y++){
+    grad_row(img,w,y+1, ixx[(y+1)%3], iyy[(y+1)%3], ixy[(y+1)%3]);
+    int *xA=ixx[(y-1)%3],*xB=ixx[y%3],*xC=ixx[(y+1)%3];
+    int *yA=iyy[(y-1)%3],*yB=iyy[y%3],*yC=iyy[(y+1)%3];
+    int *iA=ixy[(y-1)%3],*iB=ixy[y%3],*iC=ixy[(y+1)%3];
+    unsigned int x0=2;
+    for(; x0+32<=w-2; x0+=32){
+      HVX_Vector Sxx=Q6_Vw_vadd_VwVw(Q6_Vw_vadd_VwVw(
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&xA[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&xA[x0],*(HVX_UVector*)&xA[x0+1])),
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&xB[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&xB[x0],*(HVX_UVector*)&xB[x0+1]))),
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&xC[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&xC[x0],*(HVX_UVector*)&xC[x0+1])));
+      HVX_Vector Syy=Q6_Vw_vadd_VwVw(Q6_Vw_vadd_VwVw(
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&yA[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&yA[x0],*(HVX_UVector*)&yA[x0+1])),
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&yB[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&yB[x0],*(HVX_UVector*)&yB[x0+1]))),
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&yC[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&yC[x0],*(HVX_UVector*)&yC[x0+1])));
+      HVX_Vector Sxy=Q6_Vw_vadd_VwVw(Q6_Vw_vadd_VwVw(
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&iA[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&iA[x0],*(HVX_UVector*)&iA[x0+1])),
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&iB[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&iB[x0],*(HVX_UVector*)&iB[x0+1]))),
+          Q6_Vw_vadd_VwVw(*(HVX_UVector*)&iC[x0-1],Q6_Vw_vadd_VwVw(*(HVX_UVector*)&iC[x0],*(HVX_UVector*)&iC[x0+1])));
+      *(HVX_UVector*)&resp[y*w+x0]=harris_resp_half(Sxx,Syy,Sxy);
+    }
+    for(unsigned int x=x0; x+2<w; x++) resp[y*w+x]=harris_pixel(img,w,x,y); /* tail cols */
+  }
+  free(buf);
+}
+static void harris_opt_band_fn(void* pv){ harris_band_t* b=(harris_band_t*)pv;
+  harris_opt_rows(b->img,b->w,b->hh,b->resp,b->y0,b->y1); worker_pool_synctoken_jobdone(b->tok); }
+
 int calculator_harris(remote_handle64 h, const unsigned char* img, int imgLen,
                       unsigned int w, unsigned int hh, unsigned int mode,
                       float* resp, int respLen, unsigned int* us){
@@ -120,6 +190,18 @@ int calculator_harris(remote_handle64 h, const unsigned char* img, int imgLen,
       worker_pool_job_t j; j.fptr=harris_band_fn; j.dptr=&bd[k]; worker_pool_submit(ctx,j); }
     worker_pool_synctoken_wait(&tok); worker_pool_deinit(&ctx);
   }
+  else if(mode==4){ /* OPT single-pass HVX, multi-thread */
+    worker_pool_context_t ctx; worker_pool_init(&ctx);
+    unsigned int nw=num_workers; if(nw<1)nw=1; if(nw>16)nw=16;
+    unsigned int y0=2,y1=hh-2,rows=y1-y0; if(nw>rows)nw=rows?rows:1;
+    worker_synctoken_t tok; worker_pool_synctoken_init(&tok,nw);
+    harris_band_t bd[16]; unsigned int per=(rows+nw-1)/nw;
+    for(unsigned int k=0;k<nw;k++){ unsigned int a=y0+k*per,b=a+per; if(a>y1)a=y1; if(b>y1)b=y1;
+      bd[k].img=img;bd[k].w=w;bd[k].hh=hh;bd[k].y0=a;bd[k].y1=b;bd[k].resp=resp;bd[k].tok=&tok;
+      worker_pool_job_t j; j.fptr=harris_opt_band_fn; j.dptr=&bd[k]; worker_pool_submit(ctx,j); }
+    worker_pool_synctoken_wait(&tok); worker_pool_deinit(&ctx);
+  }
+  else if(mode==3) harris_opt_rows(img,w,hh,resp,2,hh-2);   /* OPT single-pass HVX, 1 thread */
   else if(mode==1) harris_hvx_rows(img,w,hh,resp,2,hh-2);   /* HVX single-thread */
   else             harris_scalar_rows(img,w,hh,resp,2,hh-2);/* mode 0 = scalar */
   *us=(unsigned int)(HAP_perf_get_time_us()-_t0);

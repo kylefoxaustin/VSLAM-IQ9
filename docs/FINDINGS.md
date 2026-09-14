@@ -75,7 +75,16 @@ Fourth kernel: dense Harris (Sobel 3x3 -> Ixx/Iyy/Ixy -> 3x3 box-sum -> R=det-0.
 | **HVX multi-thread (worker_pool, row bands)** | **1.97 ms** | **23.1x** |
 - **Gated on the metric a corner-response kernel is FOR**, not raw float: top-500/2000/5000 corner overlap **100.00%**, all 83087 `|R|>1e9` corners match to max_rel **5.4e-5** (float-exact); nonzero-count identical. The larger raw-float diffs (~3e-2) are `det-k*tr^2` catastrophic cancellation in the near-zero *non-corner* noise floor — irrelevant to detection. (Verify the OUTPUT that's used, not the float in the noise.)
 - **9.25x single-thread HVX confirms the dense-compute prediction** (big win, FAST-like).
-- ⭐ **But HVX-MT threads only 2.49x — like sparse orient, NOT like dense FAST (3x).** De-confounded: HVX-vectorizing the serial zero did *not* change it, so the cause is that *this* implementation is **load-heavy** (108 unaligned u8-vector loads per 64 output pixels, because gradients are recomputed for all 9 box positions), pushing it toward bandwidth-bound. **Thread-scaling is kernel × IMPLEMENTATION arithmetic-intensity, not the abstract kernel class alone.** An optimized Harris (each gradient computed once, reused via a separable horizontal+vertical box-sum) should thread closer to 3x. For a cross-DSP (Cadence) equivalency this is the sharper currency: compare by *measured arithmetic intensity*, not by kernel name.
+- ⭐ **But HVX-MT threads only 2.49x — like sparse orient, NOT like dense FAST (3x).** De-confounded: HVX-vectorizing the serial zero did *not* change it, so the cause is that *this* implementation is **load-heavy** (108 unaligned u8-vector loads per 64 output pixels, because gradients are recomputed for all 9 box positions), pushing it toward bandwidth-bound. **Thread-scaling is kernel × IMPLEMENTATION arithmetic-intensity, not the abstract kernel class alone.**
+
+**Prediction (published here) → tested → REFUTED, and that's the useful part.** I predicted an optimized Harris — each gradient computed **once** into scratch, then a box-sum reading scratch — would be more compute-bound and thread closer to 3x. Built it (modes 3/4, bit-corner-identical). Result:
+| Harris | on-DSP | threading |
+|---|---|---|
+| HVX naive (9× gradient recompute), 1t | 4.87 ms | — |
+| HVX-MT naive | 1.96 ms | 2.48× |
+| **OPT single-pass, 1t** | **2.85 ms** (1.71× faster) | — |
+| **OPT single-pass, MT** | **1.24 ms** (36.6× over scalar, best Harris) | **2.30×** |
+The optimization made it **faster absolute** (fewer redundant computes — OPT-MT is the fastest Harris) but threaded **worse** (2.30× vs 2.48×) — the opposite of the prediction. **Mechanism:** computing gradients once needs a **scratch round-trip through the shared L2/DDR path**, and the cDSP HW threads *share* that path — so caching intermediates converts arithmetic into shared-memory traffic, which is exactly what caps HVX thread-scaling (same root as blur threading ≈0). **Thread-scaling tracks pressure on the SHARED MEMORY PATH, not the kernel's compute/memory ratio in isolation.** For a cross-DSP (Cadence) equivalency this is the sharper currency: compare by *measured arithmetic intensity and shared-memory pressure*, not by kernel name — and beware that a local-compute optimization can lower thread-scaling even as it lowers absolute latency.
 
 ## 9. rBRIEF descriptor: "gather-bound" prediction REFUTED — it's rounding/compute-bound
 Fifth kernel: rotated 256-bit BRIEF descriptor (chained orient-angles -> rotated sampling), 992 keypoints, bit-exact to scalar (mean Hamming 0.000). Uses a deterministic *synthetic* 256-pair pattern (same shape as ORB's learned bit_pattern_31_, for perf + HVX-vs-scalar characterization; not OpenCV-bit-compatible). Scalar reference independently verified bit-exact vs numpy (Hamming 0 over all 992 kp).
@@ -91,7 +100,7 @@ Fifth kernel: rotated 256-bit BRIEF descriptor (chained orient-angles -> rotated
 | kernel | class | HVX 1t | HVX-MT | thread scaling | HVX vs scalar |
 |---|---|---|---|---|---|
 | FAST | compute-bound, **dense per-pixel** | 1.6 ms | **0.55 ms** | ~3x | 44x |
-| Harris | compute-bound, **dense** (load-heavy impl) | 4.90 ms | **1.97 ms** | 2.5x | 9.25x |
+| Harris | compute-bound, **dense** | 4.90 ms (naive) / 2.85 ms (opt) | **1.24 ms** (opt-MT) | 2.3–2.5x | 9.25x |
 | orient | compute-bound, **sparse per-keypoint** | 0.84 ms | **0.33 ms** | 2.5x | 3.4x |
 | rBRIEF | **rounding/compute-bound** (not the gather!) | 6.72 ms | **2.70 ms** | 2.5x | 24.8x |
 | blur | **bandwidth-bound** | 8.6 ms | 8.1 ms | ~0 | ~5x (loses to CPU) |
