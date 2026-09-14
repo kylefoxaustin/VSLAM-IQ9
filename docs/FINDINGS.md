@@ -21,8 +21,9 @@ Custom fastRPC skel, unsigned PD, on-DSP `HAP_perf` timing, corner count gated a
 | implementation | corners | on-DSP time |
 |---|---|---|
 | scalar C (1 HW thread, no HVX) | 19059 | 76.4 ms |
-| **HVX (128-lane u8, vectorized run-length)** | **19059** (exact) | **1.73 ms** |
-~44× speedup from HVX. The HVX kernel is now ~on par with the A78 CPU (2 ms) while **freeing the CPU**. This is the first measured per-kernel HVX number for a future Cadence-DSP equivalency.
+| HVX (128-lane u8, vectorized run-length), 1 thread | 19059 | 1.60 ms |
+| **HVX multi-thread (worker_pool across cDSP HW threads)** | **19059** (exact) | **0.555 ms** |
+~137× over scalar; HVX multi-thread is **~3.6× faster than the A78 CPU (2 ms)** while **fully offloading it**. DSP pinned to TURBO_PLUS (HAP_power).  This is the first measured per-kernel HVX number for a future Cadence-DSP equivalency.
 
 Method note (HVX): the "≥9 contiguous of 16" arc test is vectorized as a **run-length** over k=0..23 (wrapped) across 128 lanes — `run = brighter_k ? run+1 : 0`, track `maxrun`, corner if `maxrun ≥ 9` (brighter or darker). Right-edge remainder handled by a masked final HVX vector (a scalar tail cost 11 ms and erased the win).
 

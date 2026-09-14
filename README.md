@@ -24,7 +24,8 @@ headroom for planning/policy, more cameras, higher frame-rate, and tail-latency 
 | OpenCV "FastCV" module | NEON-**CPU**, not Hexagon (no DSP offload on this image) |
 | Adreno GPU (rusticl) 3×3 blur | slower than CPU (transfer-bound; unoptimized OpenCL stack) |
 | **FAST-9-16 on Hexagon — scalar C** | 76.4 ms on-DSP (1 thread, no HVX) |
-| **FAST-9-16 on Hexagon — HVX** | **1.73 ms on-DSP** (~44× over scalar; on par with CPU, **offloads it**) — corner count bit-exact vs CPU reference |
+| **FAST-9-16 on Hexagon — HVX, 1 thread** | 1.60 ms on-DSP |
+| **FAST-9-16 on Hexagon — HVX multi-thread** | **0.555 ms on-DSP** (~137× over scalar; **~3.6× faster than the A78 CPU**, and offloads it) — bit-exact vs CPU reference |
 
 See [docs/FINDINGS.md](docs/FINDINGS.md) for the full trail and method.
 
