@@ -171,3 +171,26 @@ MEASURED (39 real frame-pairs): **mean 594 keypoints/frame, 240 matches/frame, 5
 robustness** result (extract + match on real imagery), not a trajectory-vs-Vicon comparison. Real 6-DoF
 VO (essential-matrix + RANSAC + PnP) against EuRoC's Vicon ground truth is the next step, followed by a
 live camera feed.
+
+
+## 12. Real 6-DoF VO on EuRoC vs Vicon ground truth — it navigates
+Front-end robustness (§11) → does it actually recover motion on real data? Full 6-DoF monocular VO over
+200 real EuRoC MH_01 frames (10 s). **Architecture mirrors deployment:** the Hexagon cDSP runs the
+front-end (Harris + orient + rBRIEF, dumps per-frame keypoints+descriptors); the host does the standard
+geometry in OpenCV (BF-Hamming match → undistort → essential matrix RANSAC → recoverPose → chain).
+Scored against EuRoC's Vicon ground truth ([src/pipeline/vo_6dof_euroc.py](../src/pipeline/vo_6dof_euroc.py)).
+
+MEASURED (199 frame-pairs):
+- **Rotation error: median 0.079°, p90 0.79°** — 93% of pairs recover the drone's rotation to sub-degree.
+- **Translation-direction error: median 5.94°.** (Rotation and translation *direction* are fully
+  VO-determined; only translation *magnitude* is taken from GT, because monocular VO is scale-ambiguous.)
+- **ATE 0.30 m RMSE over a 3.56 m path** (~8.5%), SE3-aligned to Vicon.
+- **14/199 pairs (7%) degenerate** (rotation error > 5°): low-parallax / hover segments where the
+  essential matrix is ill-conditioned — the well-known **monocular** limitation (pure rotation has no
+  parallax), not a front-end fault. The other 93% are sub-degree.
+
+**Honest scope:** pure frame-to-frame monocular VO — no bundle adjustment, no loop closure, no IMU.
+EuRoC is a visual-**inertial** benchmark precisely because mono-visual alone drifts; the ~0.3 m ATE and
+the degenerate hover pairs are exactly that, and are removed by local BA / IMU fusion (VIO) — the next
+rung. The result here: **the Hexagon-extracted features drive a real 6-DoF VO that recovers rotation to
+sub-0.1° median and tracks a real drone trajectory against motion-capture ground truth.**
