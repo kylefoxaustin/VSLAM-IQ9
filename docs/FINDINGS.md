@@ -135,5 +135,18 @@ MEASURED:
 - Detector here is Harris-response + grid-NMS (VINS-Mono style, reuses the fastest kernel). FAST-based
   detection needs an HVX corner-coordinate scatter (lane compaction) — a known next step.
 
-Next: recover+plot the full 2D translation trajectory (not just heading); add an image pyramid for
-multi-scale; then a map + loop closure for full SLAM.
+**2D trajectory recovered (not just heading).** Chaining the estimated per-frame rigid transforms into
+an absolute camera pose (`vo_accumulate_pose`) reconstructs the full world path:
+```
+ accumulated heading est 22.49 vs GT 22.50 deg  (0.01 deg drift)
+ trajectory: max position error 0.15 px, end-point error 0.15 px over 16 frames  [VO OK]
+```
+The recovered path sits on top of ground truth (plot via `src/pipeline/plot_vo_trajectory.py`).
+
+**Scope, stated plainly: this is SYNTHETIC.** The scene is procedurally generated and each frame is a
+*known* rigid warp of it, so ground truth is exact by construction — which is why the error is
+sub-pixel. That validates the pipeline is **correct** (the kernels compose, the geometry is right,
+rBRIEF's steering holds through rotation), NOT that it is **robust** to real imagery (sensor noise,
+lighting, motion blur, non-planar parallax, real 6-DoF motion). Next validation is REAL images —
+EuRoC (already staged, has Vicon ground truth) is the honest test with a reference trajectory; a live
+camera feed is the demo. Then: image pyramid for multi-scale; a map + loop closure for full SLAM.
