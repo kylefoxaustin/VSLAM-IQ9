@@ -194,3 +194,30 @@ EuRoC is a visual-**inertial** benchmark precisely because mono-visual alone dri
 the degenerate hover pairs are exactly that, and are removed by local BA / IMU fusion (VIO) — the next
 rung. The result here: **the Hexagon-extracted features drive a real 6-DoF VO that recovers rotation to
 sub-0.1° median and tracks a real drone trajectory against motion-capture ground truth.**
+
+
+## 13. Image pyramid (pyrdown octave) — bandwidth-bound confirmed, taxonomy complete
+The image pyramid's octave step is a 2×2 box downsample (752×480 → 376×240). Added as a kernel (scalar +
+HVX + HVX-MT, all bit-exact). Wall-clock e2e (the kernel is sub-µs single-shot, so the on-DSP µs timer
+under-resolves it — timed on the host):
+
+| pyrdown | e2e |
+|---|---|
+| scalar | 139 µs |
+| HVX | 217 µs |
+| HVX-MT | 216 µs |
+
+**HVX gives no benefit — it's slightly *slower* — and threading gives none either.** Downsample reads the
+whole image, writes ¼, ~4 adds/pixel: pure memory movement. On a kernel this cheap, the HVX widen/narrow
+overhead plus a scalar tail lose to the compiler-optimized scalar loop. This is the **second bandwidth-bound
+instance** (with the 5×5 blur), so each class of the offload taxonomy now has ≥2 measured members:
+
+| class | kernels | HVX benefit | threading | place it |
+|---|---|---|---|---|
+| dense compute | FAST, Harris | large (9–44×) | ~2.5–3× | **Hexagon** |
+| sparse compute | orient, rBRIEF | modest–large (3–25×) | ~2.5× | Hexagon (worth it) |
+| bandwidth-bound | blur, **pyramid** | none (can lose) | none | **CPU / resident** |
+
+So a real multi-scale ORB on this board offloads FAST/Harris/orient/rBRIEF to the Hexagon and keeps the
+pyramid downsample on the CPU — not "offload the whole front end." (Full pyramid = chained pyrdowns + a
+detector per octave; the octave downsample is the primitive measured here.)
