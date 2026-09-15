@@ -221,3 +221,34 @@ instance** (with the 5×5 blur), so each class of the offload taxonomy now has �
 So a real multi-scale ORB on this board offloads FAST/Harris/orient/rBRIEF to the Hexagon and keeps the
 pyramid downsample on the CPU — not "offload the whole front end." (Full pyramid = chained pyrdowns + a
 detector per octave; the octave downsample is the primitive measured here.)
+
+
+## 14. VIO: IMU fusion fixes the degeneracies and recovers metric scale
+The monocular VO (§12) had two honest weaknesses: 7% degenerate rotation pairs (low-parallax hover) and
+no metric scale (borrowed from GT). Both are exactly what an IMU cures. First loosely-coupled
+visual-inertial step, fusing the EuRoC IMU (imu0, 200 Hz) with the Hexagon front-end features
+([src/pipeline/vio_euroc.py](../src/pipeline/vio_euroc.py)):
+- **Gyro-integrated rotation** (Rodrigues integration of the rate gyro, mapped body→camera).
+- **Metric scale** from accelerometer preintegration (propagate world acceleration from a GT-initialized
+  state; the per-interval displacement magnitude scales the visual translation direction).
+
+MEASURED vs Vicon:
+| | monocular VO | **VIO (gyro + IMU scale)** |
+|---|---|---|
+| rotation error (median) | 0.079° | **0.000°** |
+| degenerate pairs | **14 / 199** | **0 / 199** |
+| scale source | borrowed from GT | **IMU accel (1.032× of GT — 3% accurate)** |
+| ATE | 0.30 m (GT-scaled) | **0.285 m, truly metric** |
+
+- ⭐ **The gyro eliminates every degenerate pair** — rotation no longer needs parallax, so hover/low-motion
+  segments that broke the essential matrix are solved outright.
+- ⭐ **Metric scale from IMU physics** (within 3% of ground truth) removes the GT-scale crutch: the
+  trajectory is now real-scale.
+
+**Honest scope:** loosely-coupled, not a tightly-coupled sliding-window bundle adjustment. Biases and the
+initial orientation/velocity come from GT once at frame 0 — estimating those online is the next rung. And
+EuRoC's GT orientation is itself IMU-informed, so the gyro-vs-GT 0.000° is a tight agreement, not a novel
+zero; the load-bearing results are the degeneracy fix and the physically-correct metric scale.
+
+Next in the buildout: tightly-coupled sliding-window VIO (online bias/scale + local BA over keyframes) for
+lower drift with no GT initialization, then loop closure — turning this front-end + odometry into full SLAM.
