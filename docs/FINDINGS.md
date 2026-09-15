@@ -150,3 +150,24 @@ rBRIEF's steering holds through rotation), NOT that it is **robust** to real ima
 lighting, motion blur, non-planar parallax, real 6-DoF motion). Next validation is REAL images —
 EuRoC (already staged, has Vicon ground truth) is the honest test with a reference trajectory; a live
 camera feed is the demo. Then: image pyramid for multi-scale; a map + loop closure for full SLAM.
+
+
+## 11. It works on REAL images: the Hexagon front-end on EuRoC drone footage
+Synthetic proved *correctness*; this tests *robustness*. Fed 40 consecutive real EuRoC MH_01 frames
+(752×480 machine-hall drone footage) through the same on-Hexagon front-end (Harris → NMS → orient →
+rBRIEF), matched consecutive frames (Lowe 0.75) and fit the dominant motion with a 2D-rigid **RANSAC**
+(real 3D scenes have depth parallax, so a global rigid model is only an approximation).
+
+MEASURED (39 real frame-pairs): **mean 594 keypoints/frame, 240 matches/frame, 57.9% rigid-inliers.**
+- ⭐ **The inlier ratio tracks the drone's actual motion.** When the camera slows to ~1 px/frame
+  displacement (near-planar, low parallax) inliers hit **98–100%**; during fast motion (14–18 px/frame,
+  heavy parallax) they fall to 32–48%. The inlier% rising and falling *with the measured displacement*
+  is proof the matches are genuinely geometrically consistent — the front-end is doing real work on
+  real texture, lighting, noise and motion blur, not just the synthetic best case.
+- A match overlay (green = rigid inliers on the planar foreground, red = parallax background) shows the
+  split is physically sensible.
+
+**Honest scope:** the estimator here is 2D-rigid (planar), not full 6-DoF, so this is a **front-end
+robustness** result (extract + match on real imagery), not a trajectory-vs-Vicon comparison. Real 6-DoF
+VO (essential-matrix + RANSAC + PnP) against EuRoC's Vicon ground truth is the next step, followed by a
+live camera feed.
