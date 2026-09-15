@@ -108,3 +108,32 @@ Fifth kernel: rotated 256-bit BRIEF descriptor (chained orient-angles -> rotated
 **The whole ORB front-end (FAST detect + Harris score + orientation + rBRIEF descriptor) now runs on the Hexagon cDSP via HVX, each kernel gated correct.** Two load-bearing conclusions for planning an offload and for a cross-DSP (e.g. Cadence) equivalency: (1) **measure the scalar bottleneck** — don't classify by the scariest op (rBRIEF's gather was a red herring); (2) **thread-scaling is a signature** — ~3x is the pure-vector dense-row ceiling; any per-keypoint banding or scalar tail caps it near 2.5x; a bandwidth-bound kernel doesn't thread at all. Compare cross-DSP by measured per-kernel µs + arithmetic intensity, not by kernel name.
 
 HVX semantics banked while building this (probed, not guessed): u8->int **widening deinterleaves** (a 0..127 ramp returns stride-4); in-order widen = `Q6_Wuh_vzxt_Vub` then `Q6_W_vshuff_VVR(hi,lo,-2)`. The kernel dodges it — horizontal neighbors come from unaligned u8 loads (in-order), the square's even/odd int32 split *is* the pixel lo/hi partition, reunited with a 32-bit shuff at store.
+
+
+## 10. It composes: a working visual-odometry front-end on the Hexagon
+The five kernels are not just individually correct — chained together they **track a camera**. Synthetic
+sequence (we own the ground truth): a textured base scene, a camera that rotates 1.5°/frame and translates,
+16 frames. Per frame: **Harris(HVX-MT) → grid-NMS keypoints → orient(HVX-MT) → rBRIEF(HVX-MT)**, all on the
+Hexagon cDSP; then host-side Hamming matching (Lowe 0.75) to the previous frame and a 2D-rigid motion
+estimate (Procrustes + inlier refit). Orchestration in [src/pipeline/vo_frontend.c](../src/pipeline/vo_frontend.c).
+
+MEASURED:
+```
+ frame  kps   matches  inliers   rot_est  rot_GT  |  heading_est  heading_GT
+   0->1  1041     78     78(100%)   1.49    1.50   |    1.49        1.50
+   ...   (15 pairs, all 100% inliers)              |
+  14->15 1050     88     88(100%)   1.50    1.50   |   22.49       22.50
+ SUMMARY: 15 pairs | mean inlier 100.0% | max per-frame rot err 0.016 deg
+ accumulated heading est 22.49 vs GT 22.50 deg  -> 0.01 deg drift  [VO OK]
+```
+- **100% inliers on every pair; 0.01° heading drift over 15 frames.** The Hexagon front-end recovers the
+  camera's motion.
+- ⭐ **rBRIEF's rotation-invariance is doing real work.** The camera rotates a cumulative 22.5°, and the
+  *steered* (orientation-rotated) descriptors still match at 100% — a naive non-steered BRIEF would drift out
+  as rotation accumulates. Pure translation (an earlier two-frame test) could not have shown this; the
+  rotating sequence does. So the orient → rBRIEF chain earns its place, end-to-end.
+- Detector here is Harris-response + grid-NMS (VINS-Mono style, reuses the fastest kernel). FAST-based
+  detection needs an HVX corner-coordinate scatter (lane compaction) — a known next step.
+
+Next: recover+plot the full 2D translation trajectory (not just heading); add an image pyramid for
+multi-scale; then a map + loop closure for full SLAM.

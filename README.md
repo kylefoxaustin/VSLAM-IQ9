@@ -6,6 +6,12 @@ This repo records an ongoing, measurement-first investigation into running Visua
 (ORB-SLAM3 / VINS / OpenVINS) on the IQ-9075 and offloading the vision **front end**
 (FAST corners, image pyramid, orientation, descriptors) onto the board's accelerators.
 
+**Latest:** the offloaded kernels now compose into a **working visual-odometry front end** — a
+synthetic 16-frame sequence (camera rotating 1.5°/frame + translating), with **Harris + orient +
+rBRIEF running on the Hexagon cDSP**, tracks the camera at **100% inliers on every frame pair and
+0.01° heading drift over 15 frames**. See §10 of [docs/FINDINGS.md](docs/FINDINGS.md) and
+[src/pipeline/vo_frontend.c](src/pipeline/vo_frontend.c).
+
 ## Why
 On edge robots/drones the SLAM front end (feature extraction) is a large slice of the
 per-frame budget. If it can move off the CPU onto the DSP or GPU, the freed cores buy
